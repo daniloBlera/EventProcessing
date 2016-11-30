@@ -1,3 +1,4 @@
+# Utiliza python2.x
 # *-* coding: utf-8 *-*
 from datetime import datetime
 
@@ -11,7 +12,6 @@ unified_structures = []
 
 top3 = None
 
-current_sim_time = datetime(2000, 1, 1, 0, 0)
 current_timestamp = None
 last_update_timestamp = None
 current_top3 = None
@@ -60,6 +60,7 @@ def consume_handler(ch, method, properties, body):
         send_structures_for_processing()
 
 def insert_post(post):
+    """Insere o post na estrutura unificada de posts e comentários"""
     pair = (post.split('|')[1], [post.strip('\n')])
     posts.append(pair)
     unified_structures.append(pair)
@@ -67,6 +68,7 @@ def insert_post(post):
 
 
 def insert_comment(comment):
+    """Insere o comentário na estrutura unificada de posts e comentários"""
     root_id = get_root_post_id_from(comment)
 
     if root_id:
@@ -80,6 +82,9 @@ def insert_comment(comment):
 
 
 def get_root_post_id_from(comment):
+    """Recupera o ID do post ao qual o comentário está relacionado, direta ou
+    indiretamente.
+    """
     parent_ids = comment.split('|')[5:7]
     root_id = None
 
@@ -105,6 +110,11 @@ def print_unified_structures_contents():
         print("\n")
 
 def send_structures_for_processing():
+    """
+    Envia as estruturas de posts e seus respectivos comentários para serem
+    processadas pelo streaming do cluster Spark em busca das pontuações de cada
+    posts.
+    """
     global free_to_send
     global last_update_timestamp
 
@@ -120,16 +130,19 @@ def send_structures_for_processing():
             body=str(current_timestamp + sep + sep.join(struct[1]))
         )
 
-def update_current_sim_time(timestamp):
-    ts_fmt = "%Y-%m-%dT%H:%M:%S.%f+0000"
-
-    current_sim_time = datetime.strptime(timestamp, ts_fmt)
-
 def update_current_timestamp(timestamp):
+    """
+    Atualiza o tempo 'atual' simulado, este tempo é continuamente atualizado
+    para o timestamp do último evento post ou comentário armazenado.
+    """
     global current_timestamp
     current_timestamp = timestamp
 
 def get_ids_to_delete_from(message):
+    """
+    Recupera os IDs de todas as estruturas post e comentários marcadas como
+    inativas.
+    """
     scores = message.split(">>")
 
     inactive_ids = []
@@ -141,48 +154,63 @@ def get_ids_to_delete_from(message):
     return inactive_ids
 
 def get_top3_from(message):
+    """
+    Obtém a lista de top3 a partir da mensagem fornecida como argumento.
+
+    Formatação da mensagem: String contendo pares de "id-pontuação", separados
+    por ">>" enquanto os valores dos pares "id-pontuação" são separados por ','
+
+    Exemplo:
+    (ID ,Pts) (ID ,Pts)...
+    1111,100>>1234,9>>...
+    """
     scores = message.split(">>")
 
     id_score_pairs = []
     for line in scores:
-        if line.split(',')[1] > 0:
-            id_score_pairs.append(line.split(','))
+        id_score_pair = line.split(',')
+        post_id = id_score_pair[0]
+        score = int(id_score_pair[1])
 
-    id_score_pairs.sort(reverse=True)
+        if score > 0:
+            id_score_pairs.append((post_id, score))
+
+    id_score_pairs.sort(key=lambda x: x[1], reverse=True)
     return id_score_pairs[0:3]
 
-def get_top3_ids_from(message):
-    scores = message.split(">>")
+def get_ids_from(posts):
+    """
+    Recupera uma lista de IDs a partir de uma lista de tuplas do tipo
+    (ID, Pontuação).
+    """
+    if not posts:
+        return None
 
     post_ids = []
-    for s in scores:
-        id_score = s.split(',')
+    for p in posts:
+        if int(p[1]) > 0:
+            post_ids.append(p[0])
 
-        if int(id_score[1]) > 0:
-            post_ids.append(id_score[0])
-
-    post_ids.sort(reverse=True)
-
-    return post_ids[0:3]
+    return post_ids
 
 def is_current_top3_equals_to(new_top3):
-    new_ids = []
-    if not new_top3:
-        new_ids = None
-    else:
-        for pair in new_top3:
-            new_ids.append(pair[0])
+    """Verifica se o novo top3 passado como argumento é igual ao atual top3"""
+    return get_ids_from(new_top3) == get_ids_from(top3)
 
-    top3_ids = []
-    if not top3:
-        top3_ids = None
-    else:
-        for pair in top3:
-            top3_ids.append(pair[0])
-
-    return new_ids == top3_ids
+def update_post_structures(message):
+    """
+    Atualiza as estruturas unificadas de posts e seus comentários, removendo
+    as estruturas inativas indicadas pelos pares de 'id-pontuação' passados como
+    argumento.
+    """
+    remove_inactive_posts(message)
+    update_top3_posts(message)
 
 def remove_inactive_posts(message):
+    """
+    Remove os posts e todos os seus comentários relacionados quando esta com
+    base nos IDs fornecidos no argumento da função.
+    """
     global unified_structures
     posts_to_remove = get_ids_to_delete_from(message)
 
@@ -200,80 +228,8 @@ def remove_inactive_posts(message):
 
     unified_structures = new_unified_structs
 
-def update_post_structures(message):
-    remove_inactive_posts(message)
-    update_top3_posts(message)
-
-def get_connection_instance():
-    connection = pymysql.connect(
-        host='localhost', user='root', password='this is my root',
-        db='RsiPsd', charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor
-    )
-
-    return connection
-
-def send_mysql_top3_update():
-    lines = get_mysql_update_params()
-
-    connection = get_connection_instance()
-
-    try:
-        with connection.cursor() as cursor:
-            # Create a new record
-            # sql = "INSERT INTO `users` (`email`, `password`) VALUES (%s, %s)"
-            # cursor.execute(sql, ('webmaster@python.org', 'very-secret'))
-
-            query = ("INSERT INTO `RsiPsd`.`top3Posts` (`timeChanged`, " +
-                     "`idPost1`, `userPost1`, `postScore1`, `numComPost1`, " +
-                     "`idPost2`, `userPost2`, `postScore2`, `numComPost2`, " +
-                     "`idPost3`, `userPost3`, `postScore3`, `numComPost3`) " +
-                     "VALUE (" +
-                     "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);")
-
-            cursor.execute(query, lines)
-        connection.commit()
-    finally:
-        connection.close()
-
-def get_mysql_update_params():
-    ts = last_update_timestamp.replace('T', ' ')
-
-    line1 = get_params_from(0)
-    print("\nLINE1: {}".format(line1))
-
-    line2 = get_params_from(1)
-    print("LINE2: {}".format(line2))
-
-    line3 = get_params_from(2)
-    print("LINE3: {}\n".format(line3))
-
-    return (ts + ',' + line1 + ',' + line2 + ',' + line3).split(',')
-
-def get_params_from(index):
-    try:
-        post_id = top3[index][0]
-        score = top3[index][1]
-        structures = None
-
-        for s in unified_structures:
-            if s[0] == post_id:
-                structures = s[1]
-                break
-
-        op_name = structures[0].split('|')[4].strip('\n')
-        op_id = structures[0].split('|')[2]
-
-        commenters_count = 0
-        for event in structures:
-            if event.split('|')[2] != op_id:
-                commenters_count += 1
-
-        return post_id + ',' + op_name + ',' + score + ',' + str(commenters_count)
-    except IndexError, AttributeError:
-        return "-,-,-,-"
-
 def update_top3_posts(message):
+    """Atualiza caso necessário a lista de top3"""
     global top3
 
     new_top3 = get_top3_from(message)
@@ -302,6 +258,85 @@ def update_top3_posts(message):
 
     print("THIS HAPPENED AT {}\n".format(last_update_timestamp))
     send_mysql_top3_update()
+
+def get_connection_instance():
+    """Fornece uma instância do conector para mysql"""
+    connection = pymysql.connect(
+        host='localhost', user='root', password='this is my root',
+        db='RsiPsd', charset='utf8mb4',
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+    return connection
+
+def send_mysql_top3_update():
+    """Envia sinal de mudança de Top3 ao banco de dados"""
+    lines = get_mysql_update_params()
+    connection = get_connection_instance()
+
+    try:
+        with connection.cursor() as cursor:
+            query = ("INSERT INTO `RsiPsd`.`top3Posts` (`timeChanged`, " +
+                     "`idPost1`, `userPost1`, `postScore1`, `numComPost1`, " +
+                     "`idPost2`, `userPost2`, `postScore2`, `numComPost2`, " +
+                     "`idPost3`, `userPost3`, `postScore3`, `numComPost3`) " +
+                     "VALUE (" +
+                     "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);")
+
+            cursor.execute(query, lines)
+        connection.commit()
+    finally:
+        connection.close()
+
+def get_mysql_update_params():
+    """
+    Retorna uma lista de strings contendo os parâmetros para serem enviados ao
+    banco de dados.
+    """
+    ts = last_update_timestamp.replace('T', ' ')
+
+    line1 = get_params_from(0)
+    print("\nLINE1: {}".format(line1))
+
+    line2 = get_params_from(1)
+    print("LINE2: {}".format(line2))
+
+    line3 = get_params_from(2)
+    print("LINE3: {}\n".format(line3))
+
+    return (ts + ',' + line1 + ',' + line2 + ',' + line3).split(',')
+
+def get_params_from(index):
+    """
+    Recupera da estrutura de posts e comentários os atributos
+
+    *   id do post
+    *   nome do autor do post
+    *   pontuação do post
+    *   quantidade de comentários do post (ignorando-se o autor do post)
+    """
+    try:
+        post_id = top3[index][0]
+        score = top3[index][1]
+        structures = None
+
+        for s in unified_structures:
+            if s[0] == post_id:
+                structures = s[1]
+                break
+
+        op_name = structures[0].split('|')[4].strip('\n')
+        op_id = structures[0].split('|')[2]
+
+        commenters_count = 0
+        for event in structures:
+            if event.split('|')[2] != op_id:
+                commenters_count += 1
+
+        return (post_id + ',' + op_name + ',' + str(score) + ',' +
+                str(commenters_count))
+    except IndexError, AttributeError:
+        return "-,-,-,-"
 
 
 if __name__ == "__main__":
